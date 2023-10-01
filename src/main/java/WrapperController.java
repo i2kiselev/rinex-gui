@@ -31,6 +31,11 @@ public class WrapperController {
 
     public static final int DEFAULT_COLUMN_PAD = 10;
     public static final int CUSTOM_COLUMN_PAD = 20;
+    public static final int DATE_INDEX = 2;
+    public static final int TIME_INDEX = 3;
+
+    private static final String NULL_VALUE = "9999999999.999";
+    public static final String COMPONENT_FILE_NAME = "componentCounter.txt";
     private CheckComboBox<String> fileTypesChoiceBox;
 
     private CheckComboBox<String> satSysChoiceBox;
@@ -260,6 +265,7 @@ public class WrapperController {
             loadPane.getChildren().clear();
             result.set(rinexTask.getValue());
             if (result.get() == 0) {
+                createRegistryFile();
                 createGroupedFiles();
                 Alert alert = new Alert(Alert.AlertType.INFORMATION);
                 alert.setTitle("Статус программы");
@@ -472,9 +478,115 @@ public class WrapperController {
         String outputFilePath = outputTxtField.getText() + File.separator + outputName.getText();
         File outputFile = new File(outputFilePath);
         List<RnxDto> result = parseOutputFile(outputFile, inputTxtField.getText());
-        groupDto(result, getHeader(outputFile));
+        Map<String, String> systemToHeaderMap = getHeaderMap(outputFile);
+        groupDto(result, systemToHeaderMap);
     }
 
+    private void createRegistryFile(){
+        String outputFilePath = outputTxtField.getText() + File.separator + outputName.getText();
+        File outputFile = new File(outputFilePath);
+        try (BufferedReader br = new BufferedReader(new FileReader(outputFile))) {
+            String line;
+            String currentTime = null;
+            List<String> infoBlock = new ArrayList<>();
+            String fullFilePath = outputTxtField.getText() + File.separator + COMPONENT_FILE_NAME;
+            File currentFile = Paths.get(fullFilePath).toFile();
+            try(FileWriter outputWriter = new FileWriter(currentFile)) {
+                while ((line = br.readLine()) != null) {
+                    if (line.startsWith("#")){
+                        continue;
+                    }
+                    List<String> tokens = Arrays.asList(WHITESPACE_SPLIT_PATTERN.split(line));
+                    if (tokens.size() < 5){
+                        throw new RuntimeException("Строка неправильного формата: "+ line);
+                    }
+                    String date = tokens.get(DATE_INDEX);
+                    String time = tokens.get(TIME_INDEX);
+                    String dateTime = date + " " + time;
+                    if (currentTime == null){
+                        currentTime= dateTime;
+                    } else {
+                        if (currentTime.equals(dateTime)){
+                            infoBlock.add(line);
+                        } else {
+                            processInfoBlock(infoBlock, outputWriter);
+                            infoBlock.clear();
+                            infoBlock.add(line);
+                            currentTime = dateTime;
+                        }
+                    }
+                }
+            }
+
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    private void processInfoBlock(List<String> infoBlock, FileWriter writer) throws IOException {
+        Map<String, List<String>> groupedData = infoBlock.stream().collect(Collectors.groupingBy(this::getSystem));
+        Set<Map.Entry<String, List<String>>> entries = groupedData.entrySet();
+        for (Map.Entry<String, List<String>> entry : entries) {
+            List<String> systemBlock = entry.getValue();
+            String firstLine = systemBlock.get(0);
+            List<String> firstTokens = Arrays.asList(WHITESPACE_SPLIT_PATTERN.split(firstLine));
+            String date = firstTokens.get(DATE_INDEX);
+            String time = firstTokens.get(TIME_INDEX);
+            String dateTime = date + " " + time;
+            String systemType = firstTokens.get(1);
+            int numberOfColumns = firstTokens.size() - 5;
+            int[] countArray = new int[numberOfColumns];
+            for (String line : systemBlock) {
+                List<String> tokens = Arrays.asList(WHITESPACE_SPLIT_PATTERN.split(line));
+                for (int i = 5; i < tokens.size(); i++) {
+                    String currentToken = tokens.get(i);
+                    if (!NULL_VALUE.equals(currentToken)) {
+                        countArray[i-5]++;
+                    }
+                }
+            }
+            String finalString = getFinalString(dateTime, systemType, countArray);
+            writer.write(finalString);
+            writer.write(System.lineSeparator());
+        }
+    }
+
+    private String getFinalString(String dateTime, String system, int[] countArray){
+        StringBuilder s = new StringBuilder(system + " " + dateTime + " ");
+        for (int i = 0; i < countArray.length; i++) {
+           s.append(countArray[i]).append(" ");
+        }
+        return s.toString();
+    }
+    private String getSystem(String line){
+        List<String> tokens = Arrays.asList(WHITESPACE_SPLIT_PATTERN.split(line));
+        if (tokens.size() < 2){
+            throw new RuntimeException("Строка неправильного формата: "+ line);
+        }
+        return tokens.get(1);
+    }
+    private Map<String, String> getHeaderMap(File outputFile){
+        try (BufferedReader br = new BufferedReader(new FileReader(outputFile))) {
+            String line;
+            Map<String, String> resultMap = new HashMap<>();
+            while ((line = br.readLine()) != null) {
+                if (!line.startsWith("#")){
+                    continue;
+                }
+                List<String> tokens = Arrays.asList(WHITESPACE_SPLIT_PATTERN.split(line));
+                if (tokens.size() < 2){
+                    throw new RuntimeException("Заголовок неправильного формата: "+ line);
+                }
+                String system = tokens.get(1);
+                resultMap.put(system, line);
+            }
+            return resultMap;
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        return null;
+    }
+    //TODO: убьет работу с .P файлами, надо будет пофиксить
     private static String getHeader(File outputFile){
         try (BufferedReader br = new BufferedReader(new FileReader(outputFile))) {
             String line = br.readLine();
@@ -486,7 +598,7 @@ public class WrapperController {
         }
         return null;
     }
-    public void groupDto(List<RnxDto> dtoList, @Nullable String header){
+    public void groupDto(List<RnxDto> dtoList, Map<String, String> headerMap){
         List<String> checked = satSysChoiceBox.getCheckModel().getCheckedItems();
         List<String> checkedMapped = new ArrayList<>();
         checked.forEach(x-> checkedMapped.add(MAPPED_SAT_SYSTEMS.get(x)));
@@ -503,10 +615,12 @@ public class WrapperController {
             File subfolder = Paths.get(string, entry.getKey().system).toFile();
             subfolder.mkdirs();
         }
-        ColumnIndices headerIndices = getHeaderIndices(header);
-        String formattedHeader = getFormattedHeader(header, headerIndices);
+
         for (Map.Entry<SystemSatNum, List<RnxDto>> entry : entries) {
             SystemSatNum key = entry.getKey();
+            String header = headerMap.get(key.system);
+            ColumnIndices headerIndices = getHeaderIndices(header);
+            String formattedHeader = getFormattedHeader(header, headerIndices);
             File currentFile = Paths.get(string, key.system, key.satelliteNumber + ".txt").toFile();
             List<RnxDto> value = entry.getValue();
             try(FileWriter output = new FileWriter(currentFile)) {
