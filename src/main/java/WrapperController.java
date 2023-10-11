@@ -535,13 +535,14 @@ public class WrapperController {
             String dateTime = date + " " + time;
             String systemType = firstTokens.get(1);
             int numberOfColumns = firstTokens.size() - 5;
-            int[] countArray = new int[numberOfColumns];
+            int[] countArray = new int[numberOfColumns+1];
+            countArray[0]=systemBlock.size();
             for (String line : systemBlock) {
                 List<String> tokens = Arrays.asList(WHITESPACE_SPLIT_PATTERN.split(line));
                 for (int i = 5; i < tokens.size(); i++) {
                     String currentToken = tokens.get(i);
                     if (!NULL_VALUE.equals(currentToken)) {
-                        countArray[i-5]++;
+                        countArray[i-4]++;
                     }
                 }
             }
